@@ -36,9 +36,11 @@ let tx = self.pool.begin().await.context("failed to start tx")?;
 // if this fails, it becomes CreateAuthorError::Unknown automatically
 ```
 
-### Why NOT `#[non_exhaustive]`
+### Why NOT `#[non_exhaustive]` — in application code
 
-The service, handler, and tests all need to match on every variant. `#[non_exhaustive]` forces a wildcard arm that silently absorbs new variants and skips required handling. Keep the enum exhaustive so the compiler finds un-updated match sites.
+The service, handler, and tests all need to match on every variant. `#[non_exhaustive]` forces a wildcard arm that silently absorbs new variants and skips required handling. For **application code** where you control every match site, keep the enum exhaustive so the compiler flags un-updated matches.
+
+**Library exception:** if you're publishing the domain as a crate others consume, the reverse is true — the article: *"If you were writing a library, this wouldn't be true. You'd have to use `non_exhaustive`, forcing library users to include a catch-all case… otherwise, any change to the number or structure of enum variants would be breaking, and require a major version bump."*
 
 ### Derives
 

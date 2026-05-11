@@ -5,11 +5,18 @@ Ports are traits. There are two kinds:
 - **Driving ports** (called by inbound adapters): `BlogService`
 - **Driven ports** (called by the service, implemented by outbound adapters): `BlogRepository`, `BlogMetrics`, `AuthorNotifier`
 
-## Naming: bounded context, not entity
+## Naming: after the domain, whatever its scope
 
-The single biggest mistake: naming the service/repository after an entity (`AuthorService`, `AuthorRepository`). Don't do this. The canonical repo uses `BlogService` / `BlogRepository` — the bounded context is `blog`, and `Author` is merely one entity within it. Adding `Post` or `Comment` later does NOT create new services; it extends the existing `BlogService`.
+The port represents the whole domain's API. Its name should match the domain module it lives in.
 
-Exception: operation-specific notifier/listener ports (like `AuthorNotifier`) are fine to name per entity when they're genuinely entity-scoped.
+- **Article teaching example** (Parts II–III): the domain is simply `author` (one entity). Ports are `AuthorService` / `AuthorRepository`. Perfectly fine.
+- **Reference repo `3-simple-service` branch**: the same code refactored to treat the author as one entity in a larger `blog` domain. Ports become `BlogService` / `BlogRepository`.
+
+Both are valid. The decision is made by **where you draw the domain boundary** — not by a naming rule. The article's guidance: *"Start with a single, large domain"* and split only when friction demands it. If your domain contains one entity today, `AuthorService` is correct; rename it to `BlogService` (or whatever) when the domain actually grows.
+
+**Anti-pattern to avoid:** creating `AuthorService` AND `PostService` AND `CommentService` when all three entities must change atomically together. That means you have *one* domain with three entities, and you need *one* `BlogService` — see `anti-patterns.md` #1.
+
+**Exception:** operation-specific notifier/listener ports (like `AuthorNotifier`) are fine to name per entity when they're genuinely entity-scoped — the reference repo does this.
 
 ## Canonical trait pattern
 
@@ -51,12 +58,16 @@ pub trait AuthorNotifier: Send + Sync + Clone + 'static {
 }
 ```
 
-## Why each bound matters
+## Why each bound matters (and when you could drop one)
 
-- `Clone` — axum's `State<T>` extractor requires `T: Clone`. Cheap because impls hold `Arc<Pool>` or similar.
-- `Send` — move across `.await` points in multi-threaded runtimes.
-- `Sync` — `&self` shared across tasks.
-- `'static` — axum holds state for the lifetime of the server.
+The article walks through these bounds one at a time, adding each only when the concrete need appears. The full set `Clone + Send + Sync + 'static` is what you end up with for an axum + multi-threaded tokio server — the most common case. But understand *why* each is there:
+
+- `Send` — the future returned by the trait method moves across `.await` points on multi-threaded runtimes. Not needed on single-threaded runtimes (rare).
+- `Sync` — `&self` is shared across tasks. Not needed if every call has exclusive access.
+- `'static` — axum holds state for the lifetime of the server. Not needed if your port isn't shared as long-lived framework state.
+- `Clone` — axum's `State<T>` extractor requires `T: Clone`. Impls are cheap to clone because they hold `Arc<Pool>` or similar. Not needed if you aren't using axum-style state injection.
+
+In practice: write all four bounds by default. Deviate only if you know why you're deviating.
 
 ## Why `impl Future<...> + Send` instead of `async fn`
 

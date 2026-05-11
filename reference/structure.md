@@ -86,11 +86,13 @@ my-service/
 
 **`outbound/` is driven by the hexagon.** Database clients, HTTP clients, mailers. Translates domain requests into external system calls.
 
-## One module per bounded context
+## One module per domain
 
-`Author`, `Post`, `Comment` all belong to the `blog` bounded context → they live under `src/lib/domain/blog/models/`. A *different* bounded context (e.g. `billing`) would be `src/lib/domain/billing/`.
+Entities that must change together live in the same domain, in the same module. `Author`, `Post`, `Comment` that need atomic deletion all live under `src/lib/domain/blog/models/`. A *separate* domain (e.g. auth/`User` management, which the article's "Authentication and authorization" section treats specifically) would be `src/lib/domain/auth/`.
 
-**Ports (`BlogService`, `BlogRepository`) are named after the bounded context, not the entity.** `BlogService.create_author` and `BlogService.create_post` both live on the same trait. This is the single biggest naming point people get wrong.
+**Start with one domain.** Per the article: *"Start with a single, large domain."* Don't predict future boundaries — you'll guess wrong and pay to undo it. Split only when you experience real friction (independent rates of change, cross-team ownership, genuine need for different deployment cadences).
+
+**Port naming tracks the domain module name.** Ports (`{Domain}Service`, `{Domain}Repository`) are named after the domain. If the module is `author` with only an `Author` entity, the port is `AuthorService`. If the module is `blog` with `Author`, `Post`, `Comment`, the port is `BlogService`, and `BlogService::create_author` + `BlogService::create_post` live on the same trait.
 
 ## One handler file per operation
 
@@ -98,7 +100,13 @@ my-service/
 
 ## When to split into multiple crates
 
-Once domain code passes ~5k lines or multiple bounded contexts emerge, split:
+The article doesn't mandate a crate split — the single-crate `[lib]` + `[[bin]]` layout works for the full teaching example. Consider splitting into a workspace when you see concrete pressure:
+
+- Domain code is large enough that compile times suffer when you touch unrelated adapter code
+- You want the compiler (not just convention) to enforce "domain cannot import adapters"
+- Multiple binaries (server, CLI admin tool, migration runner) all consume the domain
+
+A workspace layout:
 
 ```
 Cargo.toml                  # workspace
@@ -108,4 +116,4 @@ crates/
 └── app/                    # depends on domain + adapters, contains main.rs
 ```
 
-Crate boundaries make the dependency rule compiler-enforced: domain *cannot* import adapters because it's a separate crate.
+Crate boundaries make the dependency rule compiler-enforced: domain *cannot* import adapters because it's a separate crate. But this is purely an ergonomic/safety upgrade — the article's single-crate layout is architecturally equivalent.

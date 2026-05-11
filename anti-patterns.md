@@ -2,39 +2,52 @@
 
 Things that look reasonable but violate the architecture. With Before/After.
 
-## 1. Naming ports after entities instead of bounded contexts
+## 1. Splitting one domain into many ports per entity
+
+The article's rule: *"Start with a single, large domain."* A port represents a whole domain, not one entity within it. This is about **where to draw domain boundaries**, not just naming.
 
 ### Before (wrong)
 
 ```rust
+// One service + one repo per entity, even though authors and posts must
+// change atomically (delete author → delete posts).
 pub trait AuthorService: Clone + Send + Sync + 'static { ... }
 pub trait AuthorRepository: Clone + Send + Sync + 'static { ... }
 pub trait PostService: Clone + Send + Sync + 'static { ... }
 pub trait PostRepository: Clone + Send + Sync + 'static { ... }
 ```
 
-Now adding `Post` doubled the ports. Cross-entity transactions (create a post and update its author's count atomically) need a third trait.
+Problem: you now need transactions that span `AuthorRepository` and `PostRepository`. The article calls this out explicitly: *"If you leak transactions into your business logic to perform cross-domain operations atomically, your domain boundaries are wrong."*
 
-### After (right)
+### After (right) — if authors and posts must change atomically
 
 ```rust
-// One service and one repository for the bounded context.
+// One service and one repository for the whole blog domain.
 pub trait BlogService: Clone + Send + Sync + 'static {
     fn create_author(&self, req: &CreateAuthorRequest) -> ...;
     fn create_post(&self, req: &CreatePostRequest) -> ...;
-}
-
-pub trait BlogRepository: Clone + Send + Sync + 'static {
-    fn create_author(&self, req: &CreateAuthorRequest) -> ...;
-    fn create_post(&self, req: &CreatePostRequest) -> ...;
+    fn delete_author(&self, id: &Uuid) -> ...;  // atomically deletes posts too
 }
 ```
 
-Exception: entity-specific notifiers (`AuthorNotifier`) are fine — they're genuinely scoped to one entity.
+### Also valid — if the domain genuinely has only `Author` right now
+
+```rust
+// Small teaching example — the article itself uses this naming
+// throughout Parts II and III. Perfectly fine for a single-entity domain.
+pub trait AuthorService: Clone + Send + Sync + 'static { ... }
+pub trait AuthorRepository: Clone + Send + Sync + 'static { ... }
+```
+
+Rename to `BlogService` / `BlogRepository` only when the domain actually grows beyond authors.
+
+**Exception:** entity-specific notifiers (`AuthorNotifier`) are genuinely scoped to one entity — those stay entity-named even in a multi-entity domain.
 
 ---
 
-## 2. Domain type deriving `Deserialize`
+## 2. Deriving `Deserialize` on a domain type that performs validation
+
+The article ("Don't be abSerde") permits serde on domain models in ONE narrow case: the model performs no validation AND you want adapters to (de)serialize the model directly. In real apps that case is rare because validated newtypes (rule 5) are the point of domain modeling.
 
 ### Before (wrong)
 
@@ -45,11 +58,11 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Author {
     pub id: Uuid,
-    pub name: String,   // unvalidated! could be ""
+    pub name: AuthorName,   // has AuthorName::new() validation, but...
 }
 ```
 
-Domain depends on `serde`, validation is bypassed at deserialization, `name` is a raw `String`.
+Problem: *"If the second point isn't true, however, you give your adapters the power to create invalid domain models from raw data, since they can use Serde to bypass your constructors."* `Deserialize`'s default derive builds the struct field-by-field, skipping `AuthorName::new`.
 
 ### After (right)
 
@@ -147,9 +160,9 @@ Three separate traits — `BlogRepository`, `BlogMetrics`, `AuthorNotifier` — 
 
 ---
 
-## 6. Using `#[non_exhaustive]` on domain errors
+## 6. Using `#[non_exhaustive]` on domain errors in application code
 
-### Before (wrong)
+### Before (wrong — for application code)
 
 ```rust
 #[derive(Error, Debug)]
@@ -162,9 +175,15 @@ pub enum CreateAuthorError {
 
 Every match site now needs a wildcard arm, which silently catches future variants — including ones needing specific HTTP status codes.
 
-### After (right)
+### After (right — for application code)
 
-Plain enum, no `#[non_exhaustive]`. Let the compiler flag un-updated match sites.
+Plain enum, no `#[non_exhaustive]`. Let the compiler flag un-updated match sites when new variants are added.
+
+### Exception — library crates
+
+The article is explicit: *"If you were writing a library, this wouldn't be true. You'd have to use `non_exhaustive`, forcing library users to include a catch-all case in their match expressions. Otherwise, any change to the number or structure of enum variants would be breaking."*
+
+If you're publishing the domain as a crate other teams consume, `#[non_exhaustive]` is correct. The guidance here applies only to application code where you control every match site.
 
 ---
 
