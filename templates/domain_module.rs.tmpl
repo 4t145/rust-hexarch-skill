@@ -1,0 +1,213 @@
+// Template for a new bounded context.
+// Replace `blog` with your context, `Author` with your entity.
+// For multiple entities in one context, add more files under models/.
+
+// ============================================================
+// src/lib/domain/blog.rs
+// ============================================================
+
+pub mod models;
+pub mod ports;
+pub mod service;
+
+// ============================================================
+// src/lib/domain/blog/models.rs
+// ============================================================
+
+pub mod author;
+// pub mod post;    // add future entities here
+
+// ============================================================
+// src/lib/domain/blog/models/author.rs
+// ============================================================
+
+use std::fmt::{Display, Formatter};
+
+use derive_more::From;
+use thiserror::Error;
+
+// --- Validated newtypes ---
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AuthorName(String);
+
+#[derive(Clone, Debug, Error)]
+#[error("author name cannot be empty")]
+pub struct AuthorNameEmptyError;
+
+impl AuthorName {
+    pub fn new(raw: &str) -> Result<Self, AuthorNameEmptyError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            Err(AuthorNameEmptyError)
+        } else {
+            Ok(Self(trimmed.to_string()))
+        }
+    }
+}
+
+impl Display for AuthorName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EmailAddress(String);
+
+#[derive(Clone, Debug, Error)]
+#[error("{invalid_email} is not a valid email address")]
+pub struct EmailAddressError {
+    pub invalid_email: String,
+}
+
+impl EmailAddress {
+    pub fn new(raw: &str) -> Result<Self, EmailAddressError> {
+        let trimmed = raw.trim();
+        Self::validate_email_address(trimmed)?;
+        Ok(Self(trimmed.to_string()))
+    }
+
+    fn validate_email_address(_: &str) -> Result<(), EmailAddressError> {
+        // placeholder
+        Ok(())
+    }
+}
+
+impl Display for EmailAddress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// --- Entity ---
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Author {
+    id: uuid::Uuid,
+    name: AuthorName,
+    email: EmailAddress,
+}
+
+impl Author {
+    pub fn new(id: uuid::Uuid, name: AuthorName, email: EmailAddress) -> Self {
+        Self { id, name, email }
+    }
+
+    pub fn id(&self) -> &uuid::Uuid { &self.id }
+    pub fn name(&self) -> &AuthorName { &self.name }
+    pub fn email(&self) -> &EmailAddress { &self.email }
+}
+
+// --- Request model (separate from entity) ---
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, From)]
+pub struct CreateAuthorRequest {
+    name: AuthorName,
+    email: EmailAddress,
+}
+
+impl CreateAuthorRequest {
+    pub fn new(name: AuthorName, email: EmailAddress) -> Self {
+        Self { name, email }
+    }
+
+    pub fn name(&self) -> &AuthorName { &self.name }
+    pub fn email(&self) -> &EmailAddress { &self.email }
+}
+
+// --- Operation error ---
+
+#[derive(Debug, Error)]
+pub enum CreateAuthorError {
+    #[error("author with name {name} already exists")]
+    Duplicate { name: AuthorName },
+    #[error(transparent)]
+    Unknown(#[from] anyhow::Error),
+}
+
+// ============================================================
+// src/lib/domain/blog/ports.rs
+// ============================================================
+
+use std::future::Future;
+
+use crate::domain::blog::models::author::{Author, CreateAuthorRequest};
+#[allow(unused_imports)]
+use crate::domain::blog::models::author::AuthorName;
+use crate::domain::blog::models::author::CreateAuthorError;
+
+/// `BlogService` is the public API of the blog domain. Named after the bounded context,
+/// NOT any single entity — future operations on Post, Comment, etc. go on this same trait.
+pub trait BlogService: Clone + Send + Sync + 'static {
+    fn create_author(
+        &self,
+        req: &CreateAuthorRequest,
+    ) -> impl Future<Output = Result<Author, CreateAuthorError>> + Send;
+}
+
+pub trait BlogRepository: Send + Sync + Clone + 'static {
+    fn create_author(
+        &self,
+        req: &CreateAuthorRequest,
+    ) -> impl Future<Output = Result<Author, CreateAuthorError>> + Send;
+}
+
+pub trait BlogMetrics: Send + Sync + Clone + 'static {
+    fn record_author_creation_success(&self) -> impl Future<Output = ()> + Send;
+    fn record_author_creation_failure(&self) -> impl Future<Output = ()> + Send;
+}
+
+pub trait AuthorNotifier: Send + Sync + Clone + 'static {
+    fn author_created(&self, author: &Author) -> impl Future<Output = ()> + Send;
+}
+
+// ============================================================
+// src/lib/domain/blog/service.rs
+// ============================================================
+
+use crate::domain::blog::models::author::{Author, CreateAuthorError, CreateAuthorRequest};
+use crate::domain::blog::ports::{AuthorNotifier, BlogMetrics, BlogRepository, BlogService};
+
+#[derive(Debug, Clone)]
+pub struct Service<R, M, N>
+where
+    R: BlogRepository,
+    M: BlogMetrics,
+    N: AuthorNotifier,
+{
+    repo: R,
+    metrics: M,
+    author_notifier: N,
+}
+
+impl<R, M, N> Service<R, M, N>
+where
+    R: BlogRepository,
+    M: BlogMetrics,
+    N: AuthorNotifier,
+{
+    pub fn new(repo: R, metrics: M, author_notifier: N) -> Self {
+        Self { repo, metrics, author_notifier }
+    }
+}
+
+impl<R, M, N> BlogService for Service<R, M, N>
+where
+    R: BlogRepository,
+    M: BlogMetrics,
+    N: AuthorNotifier,
+{
+    async fn create_author(&self, req: &CreateAuthorRequest) -> Result<Author, CreateAuthorError> {
+        let result = self.repo.create_author(req).await;
+        if result.is_err() {
+            self.metrics.record_author_creation_failure().await;
+        } else {
+            self.metrics.record_author_creation_success().await;
+            self.author_notifier
+                .author_created(result.as_ref().unwrap())
+                .await;
+        }
+        result
+    }
+}

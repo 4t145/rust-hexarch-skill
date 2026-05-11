@@ -1,0 +1,25 @@
+// Template for src/bin/server/main.rs — bootstrap only, zero business logic.
+// Replace `my_service` with your crate name.
+
+use my_service::config::Config;
+use my_service::domain::blog::service::Service;
+use my_service::inbound::http::{HttpServer, HttpServerConfig};
+use my_service::outbound::email_client::EmailClient;
+use my_service::outbound::prometheus::Prometheus;
+use my_service::outbound::sqlite::Sqlite;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = Config::from_env()?;
+
+    tracing_subscriber::fmt::init();
+
+    let sqlite = Sqlite::new(&config.database_url).await?;
+    let prometheus = Prometheus::new();
+    let email_client = EmailClient::new();
+    let blog_service = Service::new(sqlite, prometheus, email_client);
+
+    let server_config = HttpServerConfig { port: &config.server_port };
+    let http_server = HttpServer::new(blog_service, server_config).await?;
+    http_server.run().await
+}
